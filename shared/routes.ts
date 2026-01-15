@@ -44,7 +44,6 @@ export const api = {
       method: 'PATCH' as const,
       path: '/api/tickets/:id',
       input: insertTicketSchema.partial().extend({
-        isAiActive: z.boolean().optional(),
         status: z.enum(['open', 'resolved', 'escalated']).optional(),
       }),
       responses: {

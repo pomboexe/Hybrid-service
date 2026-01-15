@@ -2,10 +2,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useRef, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 
-// Types from Replit Chat Integration Schema usually
+// Types for ticket chat messages
 interface Message {
   id: number;
-  role: "user" | "assistant";
+  role: "user" | "agent";
   content: string;
   createdAt: string;
 }
@@ -42,7 +42,7 @@ export function useSendMessage() {
       // but for simplicity in this React hook we might just wait for completion 
       // or handle the stream manually if we want real-time typing.
       
-      // NOTE: The backend routes provided by Replit Chat integration use SSE for POST /messages.
+      // NOTE: The backend routes use SSE for POST /messages.
       // This means we need to handle the stream if we want to see it live.
       
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {

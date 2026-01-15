@@ -1,11 +1,14 @@
 import { useRoute } from "wouter";
-import { useTicket, useUpdateTicket } from "@/hooks/use-tickets";
-import { useConversation, useSendMessage } from "@/hooks/use-chat";
+import { useTicket, useUpdateTicket, useAssignTicket, useRequestTransfer, useAcceptTransfer, useUnassignTicket, useRejectTransfer } from "@/hooks/use-tickets";
+import { useConversation } from "@/hooks/use-chat";
+import { useSendTicketMessage } from "@/hooks/use-ticket-messages";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge, PriorityBadge } from "@/components/StatusBadge";
 import { SentimentIndicator } from "@/components/SentimentIndicator";
-import { Bot, User, Send, CheckCircle, AlertTriangle } from "lucide-react";
+import { TransferRequestModal } from "@/components/TransferRequestModal";
+import { User, Send, CheckCircle, MessageSquare, UserCheck, UserX, ArrowRightLeft, BadgeAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
@@ -16,13 +19,33 @@ export default function TicketDetail() {
   const id = parseInt(params?.id || "0");
   const { data: ticket, isLoading } = useTicket(id);
   const { mutate: updateTicket, isPending: isUpdating } = useUpdateTicket();
+  const { mutate: assignTicket, isPending: isAssigning } = useAssignTicket();
+  const { mutate: requestTransfer, isPending: isRequesting } = useRequestTransfer();
+  const { mutate: acceptTransfer, isPending: isAccepting } = useAcceptTransfer();
+  const { mutate: unassignTicket, isPending: isUnassigning } = useUnassignTicket();
+  const { mutate: rejectTransfer } = useRejectTransfer();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   
   // Chat hooks
   const { data: conversation } = useConversation(ticket?.conversationId || null);
-  const { mutate: sendMessage, isPending: isSending } = useSendMessage();
+  const { mutate: sendMessage, isPending: isSending } = useSendTicketMessage();
 
   const [messageInput, setMessageInput] = useState("");
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Check for transfer requests periodically
+  useEffect(() => {
+    if (ticket && isAdmin && ticket.assignedTo === user?.id) {
+      const ticketWithUsers = ticket as any;
+      if (ticketWithUsers?.transferRequestToUser) {
+        setTransferModalOpen(true);
+      }
+    } else {
+      setTransferModalOpen(false);
+    }
+  }, [ticket, isAdmin, user?.id]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -34,22 +57,48 @@ export default function TicketDetail() {
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageInput.trim() || !ticket.conversationId) return;
+    if (!messageInput.trim() || !ticket.id) return;
 
     sendMessage({
-        conversationId: ticket.conversationId,
-        content: messageInput
+      ticketId: ticket.id,
+      content: messageInput,
+      role: isAdmin ? "agent" : "user",
+      conversationId: ticket.conversationId || null,
     });
     setMessageInput("");
-  };
-
-  const handleTakeover = () => {
-    updateTicket({ id, isAiActive: false, status: "open" });
   };
 
   const handleResolve = () => {
     updateTicket({ id, status: "resolved" });
   };
+
+  const handleAssign = () => {
+    assignTicket(id);
+  };
+
+  const handleRequestTransfer = () => {
+    requestTransfer(id);
+  };
+
+  const handleUnassign = () => {
+    unassignTicket(id);
+  };
+
+  const handleRejectTransfer = () => {
+    rejectTransfer(id, {
+      onSuccess: () => {
+        setTransferModalOpen(false);
+      },
+    });
+  };
+
+  // Type assertion for ticket with user info
+  const ticketWithUsers = ticket as any;
+  const assignedToUser = ticketWithUsers?.assignedToUser;
+  const transferRequestToUser = ticketWithUsers?.transferRequestToUser;
+  const isAssignedToMe = assignedToUser?.id === user?.id;
+  const isAssignedToSomeoneElse = assignedToUser && !isAssignedToMe;
+  const hasTransferRequest = transferRequestToUser && isAssignedToMe;
 
   return (
     <div className="h-[calc(100vh-2rem)] flex flex-col md:flex-row gap-6 animate-enter">
@@ -79,12 +128,16 @@ export default function TicketDetail() {
                     <span className="text-sm text-muted-foreground">Sentiment</span>
                     <SentimentIndicator sentiment={ticket.sentiment} />
                 </div>
-                <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">AI Agent</span>
-                    <span className={cn("text-xs font-bold px-2 py-0.5 rounded", ticket.isAiActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500")}>
-                        {ticket.isAiActive ? "ACTIVE" : "PAUSED"}
+                {isAdmin && (
+                  <div className="flex justify-between items-center pt-2 border-t border-border/50">
+                    <span className="text-sm text-muted-foreground">Em atendimento por</span>
+                    <span className="text-sm font-medium">
+                      {assignedToUser 
+                        ? `${assignedToUser.firstName || ''} ${assignedToUser.lastName || ''}`.trim() || assignedToUser.email
+                        : "Ninguém"}
                     </span>
-                </div>
+                  </div>
+                )}
             </div>
 
             <div className="space-y-2">
@@ -94,39 +147,65 @@ export default function TicketDetail() {
                 </p>
             </div>
 
-            <div className="flex flex-col gap-3 pt-4 border-t border-border">
-                {ticket.isAiActive ? (
-                    <Button 
-                        onClick={handleTakeover} 
-                        disabled={isUpdating}
-                        className="w-full bg-yellow-500 hover:bg-yellow-600 text-white"
-                    >
-                        <AlertTriangle className="w-4 h-4 mr-2" />
-                        Takeover Chat (Stop AI)
-                    </Button>
-                ) : (
-                    <Button 
-                        onClick={() => updateTicket({ id, isAiActive: true })} 
-                        disabled={isUpdating}
-                        variant="outline"
-                        className="w-full"
-                    >
-                        <Bot className="w-4 h-4 mr-2" />
-                        Re-activate AI Agent
-                    </Button>
+            {isAdmin && ticket.status !== 'resolved' && (
+              <div className="flex flex-col gap-3 pt-4 border-t border-border">
+                {!assignedToUser && (
+                  <Button 
+                    onClick={handleAssign} 
+                    disabled={isAssigning}
+                    className="w-full bg-primary hover:bg-primary/90 text-white"
+                  >
+                    <UserCheck className="w-4 h-4 mr-2" />
+                    {isAssigning ? "Assumindo..." : "Assumir Atendimento"}
+                  </Button>
                 )}
                 
-                {ticket.status !== 'resolved' && (
+                {isAssignedToMe && (
+                  <>
+                    {hasTransferRequest && (
+                      <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-2">
+                        <div className="flex items-center gap-2 text-yellow-800">
+                          <BadgeAlert className="w-4 h-4" />
+                          <span className="text-sm font-medium">Solicitação de transferência pendente</span>
+                        </div>
+                      </div>
+                    )}
                     <Button 
-                        onClick={handleResolve} 
-                        disabled={isUpdating}
-                        className="w-full bg-green-600 hover:bg-green-700 text-white"
+                      onClick={handleUnassign} 
+                      disabled={isUnassigning}
+                      variant="outline"
+                      className="w-full"
                     >
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Mark Resolved
+                      <UserX className="w-4 h-4 mr-2" />
+                      {isUnassigning ? "Liberando..." : "Liberar Atendimento"}
                     </Button>
+                  </>
                 )}
-            </div>
+                
+                {isAssignedToSomeoneElse && (
+                  <Button 
+                    onClick={handleRequestTransfer} 
+                    disabled={isRequesting}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    <ArrowRightLeft className="w-4 h-4 mr-2" />
+                    {isRequesting ? "Solicitando..." : "Solicitar Transferência"}
+                  </Button>
+                )}
+                
+                {isAssignedToMe && (
+                  <Button 
+                    onClick={handleResolve} 
+                    disabled={isUpdating}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    Mark Resolved
+                  </Button>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -136,12 +215,12 @@ export default function TicketDetail() {
         <CardHeader className="border-b border-border/50 py-4 bg-muted/20">
             <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
-                    <Bot className="w-6 h-6" />
+                    <MessageSquare className="w-6 h-6" />
                 </div>
                 <div>
-                    <h3 className="font-bold">Live Conversation</h3>
+                    <h3 className="font-bold">Conversation</h3>
                     <p className="text-xs text-muted-foreground">
-                        {ticket.isAiActive ? "AI is responding automatically" : "Human agent has control"}
+                        {isAdmin ? "Chat with customer" : "Chat with support team"}
                     </p>
                 </div>
             </div>
@@ -154,21 +233,31 @@ export default function TicketDetail() {
                 </div>
             ) : (
                 conversation.messages.map((msg) => {
+                    const isAgent = msg.role === "agent";
                     const isUser = msg.role === "user";
+                    
+                    // For users: show their messages on right, agent messages on left
+                    // For admins: show agent messages on right, user messages on left
+                    const showOnRight = isAdmin ? isAgent : isUser;
+                    
                     return (
-                        <div key={msg.id} className={cn("flex gap-3 max-w-[80%]", isUser ? "ml-auto flex-row-reverse" : "")}>
+                        <div key={msg.id} className={cn("flex gap-3 max-w-[80%]", showOnRight ? "ml-auto flex-row-reverse" : "")}>
                             <div className={cn(
                                 "w-8 h-8 rounded-full flex items-center justify-center shrink-0", 
-                                isUser ? "bg-indigo-100 text-indigo-600" : "bg-green-100 text-green-600"
+                                isAgent 
+                                  ? "bg-blue-100 text-blue-600"
+                                  : "bg-indigo-100 text-indigo-600"
                             )}>
-                                {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                                {isAgent ? <MessageSquare className="w-4 h-4" /> : <User className="w-4 h-4" />}
                             </div>
                             <div className={cn(
                                 "p-3 rounded-2xl text-sm shadow-sm",
-                                isUser ? "bg-indigo-600 text-white rounded-tr-none" : "bg-white text-gray-800 border border-gray-100 rounded-tl-none"
+                                isAgent 
+                                  ? "bg-blue-600 text-white rounded-tr-none"
+                                  : "bg-indigo-600 text-white rounded-tr-none"
                             )}>
                                 <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                                <span className={cn("text-[10px] opacity-70 mt-1 block", isUser ? "text-indigo-100" : "text-gray-400")}>
+                                <span className="text-[10px] opacity-70 mt-1 block text-white/70">
                                     {msg.createdAt ? format(new Date(msg.createdAt), "h:mm a") : ""}
                                 </span>
                             </div>
@@ -183,22 +272,32 @@ export default function TicketDetail() {
                 <Input 
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
-                    placeholder={ticket.isAiActive ? "Takeover to send a message..." : "Type your reply..."}
+                    placeholder={
+                      isAdmin ? "Type your reply as agent..." : "Type your message..."
+                    }
                     className="flex-1"
-                    disabled={ticket.isAiActive || isSending}
+                    disabled={isSending}
                 />
-                <Button type="submit" size="icon" disabled={ticket.isAiActive || isSending}>
+                <Button type="submit" size="icon" disabled={isSending}>
                     <Send className="w-4 h-4" />
                 </Button>
             </form>
-            {ticket.isAiActive && (
-                <p className="text-xs text-center text-muted-foreground mt-2">
-                    <AlertTriangle className="w-3 h-3 inline mr-1" />
-                    Disable AI to send manual messages
-                </p>
-            )}
         </div>
       </Card>
+
+      {/* Transfer Request Modal */}
+      {isAdmin && hasTransferRequest && (
+        <TransferRequestModal
+          open={transferModalOpen}
+          onOpenChange={setTransferModalOpen}
+          ticketId={id}
+          requestingUser={transferRequestToUser}
+          onAccept={() => {
+            acceptTransfer(id);
+          }}
+          onReject={handleRejectTransfer}
+        />
+      )}
     </div>
   );
 }

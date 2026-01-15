@@ -6,7 +6,7 @@ clsx | Utility for constructing className strings conditionally
 tailwind-merge | Utility for merging Tailwind classes safely
 
 ## Notes
-Using Replit Auth for authentication.
-Using Replit AI Chat integration for ticket conversations.
+Using local Passport authentication.
+Using local chat integration for ticket conversations.
 Dashboard stats calculated client-side from ticket list for MVP.
 Fonts: Outfit (Display) and Inter (Body).

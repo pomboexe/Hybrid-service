@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
 import { HeadphonesIcon, CheckCircle2, Zap, Shield } from "lucide-react";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function Landing() {
+  const { t } = useLanguage();
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <nav className="border-b border-border/50 bg-background/50 backdrop-blur-md sticky top-0 z-50">
@@ -12,8 +14,8 @@ export default function Landing() {
             </div>
             <span className="font-display font-bold text-xl">AutoSupport</span>
           </div>
-          <a href="/api/login">
-            <Button>Sign In</Button>
+          <a href="/login">
+            <Button>{t.common.signIn}</Button>
           </a>
         </div>
       </nav>
@@ -25,15 +27,20 @@ export default function Landing() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
                 <h1 className="text-5xl md:text-7xl font-bold font-display tracking-tight text-foreground mb-6">
                     Support your customers <br />
-                    <span className="text-primary">at the speed of AI.</span>
+                    <span className="text-primary">with ease.</span>
                 </h1>
                 <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
-                    A hybrid support desk that combines the efficiency of generative AI with the empathy of human agents. Automate 80% of queries, escalate the rest.
+                    A modern support desk system that helps you manage customer tickets efficiently. Create tickets, track conversations, and resolve issues seamlessly.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                    <a href="/api/login">
+                    <a href="/register">
                         <Button size="lg" className="h-14 px-8 text-lg shadow-xl shadow-primary/20 hover:shadow-primary/30 transition-all">
-                            Get Started Now
+                            {t.common.getStartedNow}
+                        </Button>
+                    </a>
+                    <a href="/login">
+                        <Button size="lg" variant="outline" className="h-14 px-8 text-lg">
+                            {t.common.signIn}
                         </Button>
                     </a>
                 </div>
@@ -45,18 +52,18 @@ export default function Landing() {
             <div className="grid md:grid-cols-3 gap-8">
                 <FeatureCard 
                     icon={Zap}
-                    title="AI-First Responses"
-                    description="Generative AI answers customer queries instantly using your knowledge base."
+                    title="Quick Ticket Creation"
+                    description="Create support tickets easily and track them through their entire lifecycle."
                 />
                 <FeatureCard 
                     icon={Shield}
-                    title="Seamless Takeover"
-                    description="Agents can jump into any conversation seamlessly when complex issues arise."
+                    title="Direct Communication"
+                    description="Chat directly with customers and support agents in real-time conversations."
                 />
                 <FeatureCard 
                     icon={CheckCircle2}
                     title="Smart Analytics"
-                    description="Track sentiment, resolution times, and AI performance in real-time."
+                    description="Track sentiment, resolution times, and ticket metrics in real-time."
                 />
             </div>
         </div>

@@ -3,7 +3,7 @@ import { api, buildUrl, type errorSchemas } from "@shared/routes";
 import type { InsertTicket, Ticket } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
 
-// Fetch all tickets
+// Fetch all tickets (Admin only)
 export function useTickets() {
   return useQuery({
     queryKey: [api.tickets.list.path],
@@ -11,6 +11,20 @@ export function useTickets() {
       const res = await fetch(api.tickets.list.path, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch tickets");
       return api.tickets.list.responses[200].parse(await res.json());
+    },
+  });
+}
+
+// Fetch user's own tickets
+export function useMyTickets() {
+  return useQuery({
+    queryKey: ["/api/tickets/my-tickets"],
+    queryFn: async () => {
+      const res = await fetch("/api/tickets/my-tickets", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch tickets");
+      const data = await res.json();
+      // Use the same schema as tickets list
+      return api.tickets.list.responses[200].parse(data);
     },
   });
 }
@@ -26,6 +40,7 @@ export function useTicket(id: number) {
       return api.tickets.get.responses[200].parse(await res.json());
     },
     enabled: !!id,
+    refetchInterval: 3000, // Poll for updates (transfer requests, assignment changes)
   });
 }
 
@@ -50,6 +65,7 @@ export function useCreateTicket() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tickets/my-tickets"] });
       toast({
         title: "Ticket Created",
         description: "Support request has been submitted successfully.",
@@ -97,6 +113,191 @@ export function useUpdateTicket() {
       toast({
         title: "Update Failed",
         description: "Could not update the ticket.",
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Assign ticket to current admin
+export function useAssignTicket() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (ticketId: number) => {
+      const res = await fetch(`/api/tickets/${ticketId}/assign`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Failed to assign ticket" }));
+        throw new Error(error.message || "Failed to assign ticket");
+      }
+
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      toast({
+        title: "Ticket Assigned",
+        description: "You are now handling this ticket.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Assignment Failed",
+        description: error.message || "Could not assign the ticket.",
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Request transfer of ticket
+export function useRequestTransfer() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (ticketId: number) => {
+      const res = await fetch(`/api/tickets/${ticketId}/request-transfer`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Failed to request transfer" }));
+        throw new Error(error.message || "Failed to request transfer");
+      }
+
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      toast({
+        title: "Transfer Requested",
+        description: "Transfer request has been sent to the current admin.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Request Failed",
+        description: error.message || "Could not request transfer.",
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Accept transfer of ticket
+export function useAcceptTransfer() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (ticketId: number) => {
+      const res = await fetch(`/api/tickets/${ticketId}/accept-transfer`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Failed to accept transfer" }));
+        throw new Error(error.message || "Failed to accept transfer");
+      }
+
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      toast({
+        title: "Transfer Accepted",
+        description: "Ticket has been transferred successfully.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Accept Failed",
+        description: error.message || "Could not accept transfer.",
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Unassign ticket
+export function useUnassignTicket() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (ticketId: number) => {
+      const res = await fetch(`/api/tickets/${ticketId}/unassign`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Failed to unassign ticket" }));
+        throw new Error(error.message || "Failed to unassign ticket");
+      }
+
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      toast({
+        title: "Ticket Unassigned",
+        description: "You are no longer handling this ticket.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Unassign Failed",
+        description: error.message || "Could not unassign the ticket.",
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+// Reject transfer request
+export function useRejectTransfer() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (ticketId: number) => {
+      const res = await fetch(`/api/tickets/${ticketId}/reject-transfer`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: "Failed to reject transfer" }));
+        throw new Error(error.message || "Failed to reject transfer");
+      }
+
+      return await res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
+      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      toast({
+        title: "Transfer Rejected",
+        description: "Transfer request has been rejected.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Reject Failed",
+        description: error.message || "Could not reject transfer.",
         variant: "destructive",
       });
     },

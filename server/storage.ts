@@ -6,16 +6,20 @@ import {
   type Conversation, type Message
 } from "@shared/schema";
 import { eq, desc } from "drizzle-orm";
-import { chatStorage } from "./replit_integrations/chat/storage";
-import { authStorage } from "./replit_integrations/auth/storage";
+import { chatStorage } from "./integrations/chat/storage";
 
 export interface IStorage {
   // Tickets
   getTickets(): Promise<Ticket[]>;
+  getTicketsByUserId(userId: string): Promise<Ticket[]>;
   getTicket(id: number): Promise<Ticket | undefined>;
-  createTicket(ticket: InsertTicket, conversationId: number): Promise<Ticket>;
+  createTicket(
+    ticket: InsertTicket,
+    conversationId: number,
+    userId: string
+  ): Promise<Ticket>;
   updateTicket(id: number, updates: Partial<InsertTicket>): Promise<Ticket>;
-  
+
   // Knowledge Base
   getKnowledgeDocs(): Promise<KnowledgeDoc[]>;
   createKnowledgeDoc(doc: InsertKnowledgeDoc): Promise<KnowledgeDoc>;
@@ -23,8 +27,13 @@ export interface IStorage {
 
   // Chat & Auth delegators
   createConversation(title: string): Promise<Conversation>;
+  getConversation(id: number): Promise<Conversation | undefined>;
   getMessages(conversationId: number): Promise<Message[]>;
-  addMessage(conversationId: number, role: string, content: string): Promise<Message>;
+  addMessage(
+    conversationId: number,
+    role: string,
+    content: string
+  ): Promise<Message>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -33,20 +42,35 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(tickets).orderBy(desc(tickets.createdAt));
   }
 
+  async getTicketsByUserId(userId: string): Promise<Ticket[]> {
+    return db
+      .select()
+      .from(tickets)
+      .where(eq(tickets.userId, userId))
+      .orderBy(desc(tickets.createdAt));
+  }
+
   async getTicket(id: number): Promise<Ticket | undefined> {
     const [ticket] = await db.select().from(tickets).where(eq(tickets.id, id));
     return ticket;
   }
 
-  async createTicket(ticket: InsertTicket, conversationId: number): Promise<Ticket> {
+  async createTicket(
+    ticket: InsertTicket,
+    conversationId: number,
+    userId: string
+  ): Promise<Ticket> {
     const [newTicket] = await db
       .insert(tickets)
-      .values({ ...ticket, conversationId })
+      .values({ ...ticket, conversationId, userId })
       .returning();
     return newTicket;
   }
 
-  async updateTicket(id: number, updates: Partial<InsertTicket>): Promise<Ticket> {
+  async updateTicket(
+    id: number,
+    updates: Partial<InsertTicket>
+  ): Promise<Ticket> {
     const [updated] = await db
       .update(tickets)
       .set(updates)
@@ -57,7 +81,10 @@ export class DatabaseStorage implements IStorage {
 
   // Knowledge Base
   async getKnowledgeDocs(): Promise<KnowledgeDoc[]> {
-    return db.select().from(knowledgeBase).orderBy(desc(knowledgeBase.createdAt));
+    return db
+      .select()
+      .from(knowledgeBase)
+      .orderBy(desc(knowledgeBase.createdAt));
   }
 
   async createKnowledgeDoc(doc: InsertKnowledgeDoc): Promise<KnowledgeDoc> {
@@ -73,7 +100,11 @@ export class DatabaseStorage implements IStorage {
   async createConversation(title: string) {
     return chatStorage.createConversation(title);
   }
-  
+
+  async getConversation(id: number) {
+    return chatStorage.getConversation(id);
+  }
+
   async getMessages(conversationId: number) {
     return chatStorage.getMessagesByConversation(conversationId);
   }

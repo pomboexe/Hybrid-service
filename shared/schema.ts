@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -9,6 +9,9 @@ export * from "./models/chat";
 // Import conversations to link tickets
 import { conversations } from "./models/chat";
 
+// Import users table for reference
+import { users } from "./models/auth";
+
 // === TICKETS ===
 export const tickets = pgTable("tickets", {
   id: serial("id").primaryKey(),
@@ -17,9 +20,11 @@ export const tickets = pgTable("tickets", {
   status: text("status").notNull().default("open"), // open, resolved, escalated
   priority: text("priority").notNull().default("medium"), // low, medium, high
   sentiment: text("sentiment").default("neutral"), // positive, neutral, negative
-  isAiActive: boolean("is_ai_active").default(true),
   customerName: text("customer_name"),
+  userId: text("user_id").references(() => users.id), // User who created the ticket
   conversationId: integer("conversation_id").references(() => conversations.id),
+  assignedTo: text("assigned_to").references(() => users.id), // Admin currently handling the ticket
+  transferRequestTo: text("transfer_request_to").references(() => users.id), // Admin requesting transfer
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -36,7 +41,8 @@ export const knowledgeBase = pgTable("knowledge_base", {
 export const insertTicketSchema = createInsertSchema(tickets).omit({ 
   id: true, 
   createdAt: true,
-  conversationId: true // set by backend
+  conversationId: true, // set by backend
+  userId: true // set by backend
 });
 
 export const insertKnowledgeSchema = createInsertSchema(knowledgeBase).omit({ 

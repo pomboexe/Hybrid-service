@@ -29,7 +29,7 @@ export function CreateTicketModal() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     createTicket(
-      { ...formData, status: "open", isAiActive: true },
+      { ...formData, status: "open" },
       {
         onSuccess: () => {
           setOpen(false);
@@ -51,7 +51,7 @@ export function CreateTicketModal() {
         <DialogHeader>
           <DialogTitle>Create Support Ticket</DialogTitle>
           <DialogDescription>
-            Simulate a customer request. This will start an AI conversation.
+            Create a new support ticket. Our team will respond as soon as possible.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 mt-4">

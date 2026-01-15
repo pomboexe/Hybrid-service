@@ -6,13 +6,18 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { useAuth } from "@/hooks/use-auth";
 import { Loader2 } from "lucide-react";
+import { LanguageProvider } from "@/contexts/LanguageContext";
 
 import Dashboard from "@/pages/Dashboard";
 import TicketList from "@/pages/TicketList";
 import TicketDetail from "@/pages/TicketDetail";
 import KnowledgeBase from "@/pages/KnowledgeBase";
+import UserTickets from "@/pages/UserTickets";
 import Landing from "@/pages/Landing";
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
 import NotFound from "@/pages/not-found";
+import { useLocation } from "wouter";
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -29,6 +34,7 @@ function ProtectedLayout({ children }: { children: React.ReactNode }) {
 
 function Router() {
   const { user, isLoading } = useAuth();
+  const [location] = useLocation();
 
   if (isLoading) {
     return (
@@ -38,17 +44,43 @@ function Router() {
     );
   }
 
+  // Public routes (no auth required)
+  if (location === "/login" || location === "/register") {
+    return (
+      <Switch>
+        <Route path="/login" component={Login} />
+        <Route path="/register" component={Register} />
+        <Route component={NotFound} />
+      </Switch>
+    );
+  }
+
+  // Protected routes (auth required)
   if (!user) {
     return <Landing />;
+  }
+
+  const isAdmin = user.role === "admin";
+
+  if (isAdmin) {
+    return (
+      <ProtectedLayout>
+        <Switch>
+          <Route path="/" component={Dashboard} />
+          <Route path="/tickets" component={TicketList} />
+          <Route path="/tickets/:id" component={TicketDetail} />
+          <Route path="/knowledge" component={KnowledgeBase} />
+          <Route component={NotFound} />
+        </Switch>
+      </ProtectedLayout>
+    );
   }
 
   return (
     <ProtectedLayout>
       <Switch>
-        <Route path="/" component={Dashboard} />
-        <Route path="/tickets" component={TicketList} />
+        <Route path="/" component={UserTickets} />
         <Route path="/tickets/:id" component={TicketDetail} />
-        <Route path="/knowledge" component={KnowledgeBase} />
         <Route component={NotFound} />
       </Switch>
     </ProtectedLayout>
@@ -58,10 +90,12 @@ function Router() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-      </TooltipProvider>
+      <LanguageProvider>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+        </TooltipProvider>
+      </LanguageProvider>
     </QueryClientProvider>
   );
 }
