@@ -3,12 +3,13 @@ import { useTicket, useUpdateTicket, useAssignTicket, useRequestTransfer, useAcc
 import { useConversation } from "@/hooks/use-chat";
 import { useSendTicketMessage } from "@/hooks/use-ticket-messages";
 import { useAuth } from "@/hooks/use-auth";
+import { useAnalyzeTicket, type TicketAnalysis } from "@/hooks/use-ticket-analysis";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge, PriorityBadge } from "@/components/StatusBadge";
 import { SentimentIndicator } from "@/components/SentimentIndicator";
 import { TransferRequestModal } from "@/components/TransferRequestModal";
-import { User, Send, CheckCircle, MessageSquare, UserCheck, UserX, ArrowRightLeft, BadgeAlert } from "lucide-react";
+import { User, Send, CheckCircle, MessageSquare, UserCheck, UserX, ArrowRightLeft, BadgeAlert, Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
@@ -16,8 +17,9 @@ import { cn } from "@/lib/utils";
 
 export default function TicketDetail() {
   const [match, params] = useRoute("/tickets/:id");
-  const id = parseInt(params?.id || "0");
-  const { data: ticket, isLoading } = useTicket(id);
+  // id agora é glpiId
+  const glpiId = parseInt(params?.id || "0");
+  const { data: ticket, isLoading } = useTicket(glpiId);
   const { mutate: updateTicket, isPending: isUpdating } = useUpdateTicket();
   const { mutate: assignTicket, isPending: isAssigning } = useAssignTicket();
   const { mutate: requestTransfer, isPending: isRequesting } = useRequestTransfer();
@@ -31,8 +33,13 @@ export default function TicketDetail() {
   const { data: conversation } = useConversation(ticket?.conversationId || null);
   const { mutate: sendMessage, isPending: isSending } = useSendTicketMessage();
 
+  // AI Analysis hooks
+  const { mutate: analyzeTicket, isPending: isAnalyzing } = useAnalyzeTicket();
+  const [analysis, setAnalysis] = useState<TicketAnalysis | null>(null);
+
   const [messageInput, setMessageInput] = useState("");
   const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Check for transfer requests periodically
@@ -57,10 +64,10 @@ export default function TicketDetail() {
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageInput.trim() || !ticket.id) return;
+    if (!messageInput.trim() || !ticket.glpiId) return;
 
     sendMessage({
-      ticketId: ticket.id,
+      ticketId: ticket.glpiId, // Usar glpiId ao invés de id
       content: messageInput,
       role: isAdmin ? "agent" : "user",
       conversationId: ticket.conversationId || null,
@@ -69,25 +76,40 @@ export default function TicketDetail() {
   };
 
   const handleResolve = () => {
-    updateTicket({ id, status: "resolved" });
+    if (!ticket.glpiId) return;
+    updateTicket({ id: ticket.glpiId, status: "resolved" }); // Usar glpiId
   };
 
   const handleAssign = () => {
-    assignTicket(id);
+    if (!ticket.glpiId) return;
+    assignTicket(ticket.glpiId); // Usar glpiId
   };
 
   const handleRequestTransfer = () => {
-    requestTransfer(id);
+    if (!ticket.glpiId) return;
+    requestTransfer(ticket.glpiId); // Usar glpiId
   };
 
   const handleUnassign = () => {
-    unassignTicket(id);
+    if (!ticket.glpiId) return;
+    unassignTicket(ticket.glpiId); // Usar glpiId
   };
 
   const handleRejectTransfer = () => {
-    rejectTransfer(id, {
+    if (!ticket.glpiId) return;
+    rejectTransfer(ticket.glpiId, { // Usar glpiId
       onSuccess: () => {
         setTransferModalOpen(false);
+      },
+    });
+  };
+
+  const handleAnalyzeTicket = () => {
+    if (!ticket.glpiId) return;
+    analyzeTicket(ticket.glpiId, {
+      onSuccess: (data) => {
+        setAnalysis(data);
+        setShowAnalysis(true);
       },
     });
   };
@@ -146,6 +168,51 @@ export default function TicketDetail() {
                     {ticket.description}
                 </p>
             </div>
+
+            {/* AI Analysis Results */}
+            {isAdmin && analysis && showAnalysis && (
+              <div className="space-y-2 pt-4 border-t border-border">
+                <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                  <Sparkles className="w-4 h-4" />
+                  Análise da IA
+                </h4>
+                <Card className="bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-950/20 dark:to-indigo-950/20 border-purple-200 dark:border-purple-800">
+                  <CardContent className="p-4 space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Categoria</p>
+                      <p className="text-sm font-medium text-foreground">{analysis.categoria}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Causa Provável</p>
+                      <p className="text-sm text-foreground/90 leading-relaxed">{analysis.causaProvavel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Instruções de Resolução</p>
+                      <ol className="space-y-2 list-decimal list-inside">
+                        {analysis.instrucoes.map((instrucao, index) => (
+                          <li key={index} className="text-sm text-foreground/90 leading-relaxed">
+                            {instrucao}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {isAdmin && (
+              <div className="flex flex-col gap-3 pt-4 border-t border-border">
+                <Button
+                  onClick={handleAnalyzeTicket}
+                  disabled={isAnalyzing || !ticket.glpiId}
+                  className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+                >
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  {isAnalyzing ? "Analisando com IA..." : "Analisar com IA"}
+                </Button>
+              </div>
+            )}
 
             {isAdmin && ticket.status !== 'resolved' && (
               <div className="flex flex-col gap-3 pt-4 border-t border-border">
@@ -290,10 +357,11 @@ export default function TicketDetail() {
         <TransferRequestModal
           open={transferModalOpen}
           onOpenChange={setTransferModalOpen}
-          ticketId={id}
+          ticketId={ticket.glpiId || glpiId}
           requestingUser={transferRequestToUser}
           onAccept={() => {
-            acceptTransfer(id);
+            if (!ticket.glpiId) return;
+            acceptTransfer(ticket.glpiId);
           }}
           onReject={handleRejectTransfer}
         />

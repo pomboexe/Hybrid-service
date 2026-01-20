@@ -24,6 +24,7 @@ export function CreateTicketModal() {
     description: "",
     customerName: "",
     priority: "medium",
+    sentiment: "neutral",
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -33,7 +34,7 @@ export function CreateTicketModal() {
       {
         onSuccess: () => {
           setOpen(false);
-          setFormData({ title: "", description: "", customerName: "", priority: "medium" });
+          setFormData({ title: "", description: "", customerName: "", priority: "medium", sentiment: "neutral" });
         },
       }
     );
@@ -90,6 +91,23 @@ export function CreateTicketModal() {
                 <SelectItem value="low">Low</SelectItem>
                 <SelectItem value="medium">Medium</SelectItem>
                 <SelectItem value="high">High</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="sentiment">Sentiment</Label>
+            <Select 
+              value={formData.sentiment} 
+              onValueChange={(val) => setFormData(prev => ({ ...prev, sentiment: val }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select sentiment" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="positive">Positive</SelectItem>
+                <SelectItem value="neutral">Neutral</SelectItem>
+                <SelectItem value="negative">Negative</SelectItem>
               </SelectContent>
             </Select>
           </div>

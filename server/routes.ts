@@ -9,6 +9,8 @@ import {
   isAuthenticated,
   isAdmin,
 } from "./auth";
+import { glpiClient } from "./utils/glpi";
+import { analyzeTicketWithGemini, isGeminiConfigured } from "./utils/gemini";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -19,57 +21,110 @@ export async function registerRoutes(
   registerAuthRoutes(app);
 
   // 2. Ticket Routes
-  // List tickets - Admin only
+  // List tickets - Admin only (apenas do GLPI) com paginação
   app.get(api.tickets.list.path, isAdmin, async (req, res) => {
-    const tickets = await storage.getTickets();
-    res.json(tickets);
+    // Obter parâmetros de paginação da query string (fora do try para estar no escopo do catch)
+    const page = parseInt(req.query.page as string || "1", 10);
+    const limit = parseInt(req.query.limit as string || "20", 10);
+
+    try {
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
+      }
+
+      // Validar parâmetros
+      if (page < 1) {
+        return res.status(400).json({ message: "page deve ser >= 1" });
+      }
+      if (limit < 1 || limit > 100) {
+        return res.status(400).json({ message: "limit deve estar entre 1 e 100" });
+      }
+
+      const result = await storage.getTickets(page, limit);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Erro ao buscar tickets:", error);
+      
+      // Capturar erro no Sentry
+      const Sentry = await import("@sentry/node");
+      Sentry.captureException(error, {
+        tags: {
+          route: "GET /api/tickets",
+          operation: "getTickets",
+        },
+        extra: {
+          page,
+          limit,
+          glpiConfigured: glpiClient.isConfigured(),
+        },
+      });
+      
+      // Mensagem de erro mais específica
+      let errorMessage = "Erro ao buscar tickets do GLPI";
+      let statusCode = 500;
+      
+      if (error?.message) {
+        errorMessage = error.message;
+        // Timeout ou problemas de conexão
+        if (errorMessage.includes("Timeout") || errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOTFOUND")) {
+          statusCode = 503;
+        }
+      }
+      
+      res.status(statusCode).json({ message: errorMessage });
+    }
   });
 
   // List my tickets - User only
   app.get("/api/tickets/my-tickets", isAuthenticated, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-    const tickets = await storage.getTicketsByUserId(userId);
-    res.json(tickets);
+    try {
+      const userId = (req.session as any)?.userId;
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
+      }
+
+      const tickets = await storage.getTicketsByUserId(userId);
+      res.json(tickets);
+    } catch (error) {
+      console.error("Erro ao buscar tickets do usuário:", error);
+      res.status(500).json({ message: "Erro ao buscar tickets" });
+    }
   });
 
+  // GET /api/tickets/:id - id agora é glpiId
   app.get(api.tickets.get.path, isAuthenticated, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    const ticket = await storage.getTicket(Number(req.params.id));
-    if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+    try {
+      const userId = (req.session as any)?.userId;
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    // Users can only see their own tickets, admins can see all
-    const { authStorage } = await import("./auth/storage");
-    const user = await authStorage.getUserById(userId);
-    if (user?.role !== "admin" && ticket.userId !== userId) {
-      return res
-        .status(403)
-        .json({ message: "Forbidden: You can only view your own tickets" });
-    }
-
-    // Get assigned admin info if assigned
-    let assignedToUser = null;
-    let transferRequestToUser = null;
-    if (ticket.assignedTo) {
-      assignedToUser = await authStorage.getUserById(ticket.assignedTo);
-      if (assignedToUser) {
-        const { password: _, ...userWithoutPassword } = assignedToUser;
-        assignedToUser = userWithoutPassword;
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
       }
-    }
-    if (ticket.transferRequestTo) {
-      transferRequestToUser = await authStorage.getUserById(ticket.transferRequestTo);
-      if (transferRequestToUser) {
-        const { password: _, ...userWithoutPassword } = transferRequestToUser;
-        transferRequestToUser = userWithoutPassword;
-      }
-    }
 
-    res.json({
-      ...ticket,
-      assignedToUser,
-      transferRequestToUser,
-    });
+      const glpiId = Number(req.params.id);
+      const ticket = await storage.getTicketByGlpiId(glpiId);
+      
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      // Users can only see their own tickets, admins can see all
+      const { authStorage } = await import("./auth/storage");
+      const user = await authStorage.getUserById(userId);
+      if (user?.role !== "admin" && ticket.userId !== userId) {
+        return res
+          .status(403)
+          .json({ message: "Forbidden: You can only view your own tickets" });
+      }
+
+      // GLPI não retorna assignedTo diretamente, mas podemos mapear users_id_recipient se necessário
+      res.json(ticket);
+    } catch (error) {
+      console.error("Erro ao buscar ticket:", error);
+      res.status(500).json({ message: "Erro ao buscar ticket" });
+    }
   });
 
   app.post(api.tickets.create.path, isAuthenticated, async (req: any, res) => {
@@ -77,12 +132,16 @@ export async function registerRoutes(
       const userId = (req.session as any)?.userId;
       if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
+      }
+
       const input = api.tickets.create.input.parse(req.body);
 
-      // 1. Create a conversation for this ticket
-      const conversation = await storage.createConversation(input.title);
+      // 1. Create a conversation for this ticket (para chat local)
+      const conversation = await storage.createConversation(input.title ?? "Novo Ticket");
 
-      // 2. Create the ticket linked to conversation and user
+      // 2. Create the ticket in GLPI and link conversation/user in local mapping
       const ticket = await storage.createTicket(input, conversation.id, userId);
 
       // 3. Add initial message if description exists
@@ -95,19 +154,27 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
       }
-      throw err;
+      console.error("Erro ao criar ticket:", err);
+      res.status(500).json({ message: "Erro ao criar ticket no GLPI" });
     }
   });
 
+  // PATCH /api/tickets/:id - id agora é glpiId
   app.patch(api.tickets.update.path, isAdmin, async (req, res) => {
     try {
-      const id = Number(req.params.id);
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
+      }
+
+      const glpiId = Number(req.params.id);
       const updates = api.tickets.update.input.parse(req.body);
-      const ticket = await storage.updateTicket(id, updates);
+      const ticket = await storage.updateTicket(glpiId, updates);
       res.json(ticket);
     } catch (err) {
-      if (err instanceof z.ZodError)
+      if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
+      }
+      console.error("Erro ao atualizar ticket:", err);
       res.status(404).json({ message: "Ticket not found" });
     }
   });
@@ -147,14 +214,15 @@ export async function registerRoutes(
     const user = await authStorage.getUserById(userId);
     const isAdmin = user?.role === "admin";
     
-    // Find ticket with this conversationId
-    const allTickets = isAdmin 
-      ? await storage.getTickets()
-      : await storage.getTicketsByUserId(userId);
-    
-    const ticket = allTickets.find(t => t.conversationId === conversationId);
+    // Find ticket with this conversationId (via mapping)
+    const ticket = await storage.getTicketByConversationId(conversationId);
     
     if (!ticket) {
+      return res.status(403).json({ message: "Forbidden: You don't have access to this conversation" });
+    }
+
+    // Verify user has access
+    if (!isAdmin && ticket.userId !== userId) {
       return res.status(403).json({ message: "Forbidden: You don't have access to this conversation" });
     }
 
@@ -170,200 +238,147 @@ export async function registerRoutes(
   });
 
   // 5. Custom Message Endpoint (for Ticket Chat)
+  // /api/tickets/:id/messages - id agora é glpiId
   app.post("/api/tickets/:id/messages", isAuthenticated, async (req, res) => {
-    const ticketId = Number(req.params.id);
-    const { content, role } = req.body; // role: 'user' (customer) or 'agent'
+    try {
+      const glpiId = Number(req.params.id);
+      const { content, role } = req.body; // role: 'user' (customer) or 'agent'
 
-    const ticket = await storage.getTicket(ticketId);
-    if (!ticket || !ticket.conversationId)
-      return res.status(404).json({ message: "Ticket/Conversation not found" });
+      const ticket = await storage.getTicketByGlpiId(glpiId);
+      if (!ticket || !ticket.conversationId) {
+        return res.status(404).json({ message: "Ticket/Conversation not found" });
+      }
 
-    // Add User/Agent Message
-    const message = await storage.addMessage(
-      ticket.conversationId,
-      role,
-      content
-    );
+      // Add User/Agent Message
+      const message = await storage.addMessage(
+        ticket.conversationId,
+        role,
+        content
+      );
 
-    res.json({ message });
+      res.json({ message });
+    } catch (error) {
+      console.error("Erro ao adicionar mensagem:", error);
+      res.status(500).json({ message: "Erro ao adicionar mensagem" });
+    }
   });
 
   // 6. Assignment Endpoints
-  // Assign ticket to current admin
+  // Assign ticket to current admin (via GLPI users_id_recipient)
+  // Note: Esta funcionalidade requer mapeamento de userId local para users_id do GLPI
+  // Por enquanto, vamos apenas atualizar o status ou deixar como está
+  // O GLPI gerencia atribuições através de users_id_recipient
   app.post("/api/tickets/:id/assign", isAdmin, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    try {
+      const userId = (req.session as any)?.userId;
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    const ticketId = Number(req.params.id);
-    const ticket = await storage.getTicket(ticketId);
-    
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
+      if (!glpiClient.isConfigured()) {
+        return res.status(503).json({ message: "GLPI não está configurado" });
+      }
 
-    // If already assigned to someone else, return error
-    if (ticket.assignedTo && ticket.assignedTo !== userId) {
-      const { authStorage } = await import("./auth/storage");
-      const assignedUser = await authStorage.getUserById(ticket.assignedTo);
-      return res.status(409).json({ 
-        message: "Ticket is already being handled by another admin",
-        assignedTo: assignedUser ? {
-          id: assignedUser.id,
-          firstName: assignedUser.firstName,
-          lastName: assignedUser.lastName,
-          email: assignedUser.email,
-        } : null,
+      const glpiId = Number(req.params.id);
+      const ticket = await storage.getTicketByGlpiId(glpiId);
+      
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      // Atribuição no GLPI requer users_id_recipient (ID do usuário no GLPI)
+      // Como não temos mapeamento de usuários locais -> GLPI users, vamos apenas
+      // atualizar o ticket para status "em processamento" se ainda estiver "novo"
+      // Em produção, seria necessário mapear userId local para users_id do GLPI
+      
+      // Por enquanto, apenas retornar o ticket (atribuição deve ser feita direto no GLPI)
+      // Ou implementar mapeamento de usuários se necessário
+      res.json({
+        ...ticket,
+        message: "Para atribuir tickets, use o GLPI diretamente ou implemente mapeamento de usuários",
       });
+    } catch (error) {
+      console.error("Erro ao atribuir ticket:", error);
+      res.status(500).json({ message: "Erro ao atribuir ticket" });
     }
-
-    // Assign to current admin
-    const updatedTicket = await storage.updateTicket(ticketId, { assignedTo: userId });
-    
-    // Get assigned user info
-    const { authStorage } = await import("./auth/storage");
-    const assignedUser = await authStorage.getUserById(userId);
-    const { password: _, ...userWithoutPassword } = assignedUser!;
-
-    res.json({
-      ...updatedTicket,
-      assignedToUser: userWithoutPassword,
-    });
   });
 
-  // Request transfer
+  // Request transfer - Desabilitado pois requer mapeamento de usuários GLPI
+  // Transferências devem ser feitas diretamente no GLPI
   app.post("/api/tickets/:id/request-transfer", isAdmin, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-
-    const ticketId = Number(req.params.id);
-    const ticket = await storage.getTicket(ticketId);
-    
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
-
-    // Can only request transfer if ticket is assigned to someone else
-    if (!ticket.assignedTo) {
-      return res.status(400).json({ message: "Ticket is not assigned. Use assign endpoint instead." });
-    }
-
-    if (ticket.assignedTo === userId) {
-      return res.status(400).json({ message: "You are already handling this ticket" });
-    }
-
-    // Set transfer request
-    const updatedTicket = await storage.updateTicket(ticketId, { transferRequestTo: userId });
-    
-    // Get requesting user info
-    const { authStorage } = await import("./auth/storage");
-    const requestingUser = await authStorage.getUserById(userId);
-    const { password: _, ...userWithoutPassword } = requestingUser!;
-
-    res.json({
-      ...updatedTicket,
-      transferRequestToUser: userWithoutPassword,
+    res.status(501).json({ 
+      message: "Transfer requests devem ser feitas diretamente no GLPI. Mapeamento de usuários não implementado." 
     });
   });
 
-  // Accept transfer
+  // Accept transfer - Desabilitado
   app.post("/api/tickets/:id/accept-transfer", isAdmin, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-
-    const ticketId = Number(req.params.id);
-    const ticket = await storage.getTicket(ticketId);
-    
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
-
-    // Can only accept if currently assigned to this admin
-    if (ticket.assignedTo !== userId) {
-      return res.status(403).json({ message: "You are not currently assigned to this ticket" });
-    }
-
-    // Must have a transfer request
-    if (!ticket.transferRequestTo) {
-      return res.status(400).json({ message: "No transfer request pending" });
-    }
-
-    // Transfer to requesting admin
-    const newAssigneeId = ticket.transferRequestTo;
-    const updatedTicket = await storage.updateTicket(ticketId, { 
-      assignedTo: newAssigneeId,
-      transferRequestTo: null,
-    });
-    
-    // Get new assigned user info
-    const { authStorage } = await import("./auth/storage");
-    const assignedUser = await authStorage.getUserById(newAssigneeId);
-    const { password: _, ...userWithoutPassword } = assignedUser!;
-
-    res.json({
-      ...updatedTicket,
-      assignedToUser: userWithoutPassword,
-      transferRequestToUser: null,
+    res.status(501).json({ 
+      message: "Transfer requests devem ser feitas diretamente no GLPI. Mapeamento de usuários não implementado." 
     });
   });
 
-  // Unassign ticket
+  // Unassign ticket - Desabilitado (atribuição gerenciada pelo GLPI)
   app.post("/api/tickets/:id/unassign", isAdmin, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-
-    const ticketId = Number(req.params.id);
-    const ticket = await storage.getTicket(ticketId);
-    
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
-
-    // Can only unassign if currently assigned to this admin
-    if (ticket.assignedTo !== userId) {
-      return res.status(403).json({ message: "You are not currently assigned to this ticket" });
-    }
-
-    // Unassign
-    const updatedTicket = await storage.updateTicket(ticketId, { 
-      assignedTo: null,
-      transferRequestTo: null, // Also clear any pending transfer requests
-    });
-
-    const { authStorage } = await import("./auth/storage");
-    res.json({
-      ...updatedTicket,
-      assignedToUser: null,
-      transferRequestToUser: null,
+    res.status(501).json({ 
+      message: "Desatribuição deve ser feita diretamente no GLPI. Mapeamento de usuários não implementado." 
     });
   });
 
-  // Reject/Cancel transfer request
+  // Reject/Cancel transfer request - Desabilitado
   app.post("/api/tickets/:id/reject-transfer", isAdmin, async (req: any, res) => {
-    const userId = (req.session as any)?.userId;
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-
-    const ticketId = Number(req.params.id);
-    const ticket = await storage.getTicket(ticketId);
-    
-    if (!ticket) {
-      return res.status(404).json({ message: "Ticket not found" });
-    }
-
-    // Can only reject if currently assigned to this admin
-    if (ticket.assignedTo !== userId) {
-      return res.status(403).json({ message: "You are not currently assigned to this ticket" });
-    }
-
-    // Clear transfer request
-    const updatedTicket = await storage.updateTicket(ticketId, { 
-      transferRequestTo: null,
+    res.status(501).json({ 
+      message: "Transfer requests devem ser feitas diretamente no GLPI. Mapeamento de usuários não implementado." 
     });
+  });
 
-    const { authStorage } = await import("./auth/storage");
-    res.json({
-      ...updatedTicket,
-      transferRequestToUser: null,
-    });
+  // 7. Ticket Analysis with Gemini AI - Admin only
+  app.post("/api/tickets/:id/analyze", isAdmin, async (req: any, res) => {
+    try {
+      if (!isGeminiConfigured()) {
+        return res.status(503).json({ message: "Gemini AI não está configurado. Configure GEMINI_API_KEY no arquivo .env" });
+      }
+
+      const glpiId = Number(req.params.id);
+      
+      // Buscar ticket completo
+      const ticket = await storage.getTicketByGlpiId(glpiId);
+      if (!ticket) {
+        return res.status(404).json({ message: "Ticket not found" });
+      }
+
+      // Buscar mensagens da conversa se existir
+      let messages: Array<{ role: "user" | "agent"; content: string; createdAt: string }> = [];
+      if (ticket.conversationId) {
+        const conversationMessages = await storage.getMessages(ticket.conversationId);
+        messages = conversationMessages.map((msg) => ({
+          role: msg.role as "user" | "agent",
+          content: msg.content,
+          createdAt: msg.createdAt ? new Date(msg.createdAt).toISOString() : new Date().toISOString(),
+        }));
+      }
+
+      // Montar dados para análise
+      const ticketData = {
+        title: ticket.title || "Sem título",
+        description: ticket.description || undefined,
+        status: ticket.status || "open",
+        priority: ticket.priority || "medium",
+        sentiment: ticket.sentiment || undefined,
+        customerName: ticket.customerName || undefined,
+        messages: messages,
+      };
+
+      // Analisar com Gemini
+      const analysis = await analyzeTicketWithGemini(ticketData);
+
+      if (!analysis) {
+        return res.status(500).json({ message: "Falha ao analisar ticket com IA" });
+      }
+
+      res.json(analysis);
+    } catch (error) {
+      console.error("Erro ao analisar ticket:", error);
+      res.status(500).json({ message: "Erro ao analisar ticket com IA" });
+    }
   });
 
   return httpServer;

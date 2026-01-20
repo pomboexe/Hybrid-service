@@ -3,14 +3,89 @@ import { api, buildUrl, type errorSchemas } from "@shared/routes";
 import type { InsertTicket, Ticket } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
 
-// Fetch all tickets (Admin only)
-export function useTickets() {
+// Interface para resposta paginada
+interface PaginatedTicketsResponse {
+  tickets: Ticket[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+// Helper para adicionar timeout ao fetch
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeout: number = 35000 // 35 segundos (mais que o servidor)
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`Timeout ao carregar tickets (${timeout}ms). O servidor pode estar lento ou indisponível.`);
+    }
+    throw error;
+  }
+}
+
+// Fetch all tickets (Admin only) com paginação
+export function useTickets(page: number = 1, limit: number = 20) {
   return useQuery({
-    queryKey: [api.tickets.list.path],
-    queryFn: async () => {
-      const res = await fetch(api.tickets.list.path, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch tickets");
-      return api.tickets.list.responses[200].parse(await res.json());
+    queryKey: [api.tickets.list.path, page, limit],
+    queryFn: async (): Promise<PaginatedTicketsResponse> => {
+      const url = `${api.tickets.list.path}?page=${page}&limit=${limit}`;
+      const res = await fetchWithTimeout(url, { credentials: "include" });
+      
+      if (!res.ok) {
+        // Tentar obter mensagem de erro da API
+        let errorMessage = "Falha ao carregar tickets";
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.message || errorMessage;
+        } catch {
+          // Se não conseguir parsear o erro, usar mensagem padrão baseada no status
+          if (res.status === 401) {
+            errorMessage = "Não autorizado. Por favor, faça login novamente.";
+          } else if (res.status === 503) {
+            errorMessage = "Serviço temporariamente indisponível. GLPI não está configurado.";
+          } else if (res.status >= 500) {
+            errorMessage = "Erro interno do servidor. Tente novamente mais tarde.";
+          }
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const data = await res.json();
+      
+      // Validar estrutura da resposta com fallback
+      if (!data) {
+        throw new Error("Resposta vazia do servidor");
+      }
+      
+      // Se não tiver a estrutura esperada, tentar retornar dados válidos
+      const tickets = Array.isArray(data.tickets) ? data.tickets : (Array.isArray(data) ? data : []);
+      const pagination = data.pagination || {
+        page: page,
+        limit: limit,
+        total: tickets.length,
+        totalPages: Math.ceil(tickets.length / limit),
+      };
+      
+      return {
+        tickets,
+        pagination,
+      };
     },
   });
 }
@@ -29,18 +104,18 @@ export function useMyTickets() {
   });
 }
 
-// Fetch single ticket
-export function useTicket(id: number) {
+// Fetch single ticket (id agora é glpiId)
+export function useTicket(glpiId: number) {
   return useQuery({
-    queryKey: [api.tickets.get.path, id],
+    queryKey: [api.tickets.get.path, glpiId],
     queryFn: async () => {
-      const url = buildUrl(api.tickets.get.path, { id });
+      const url = buildUrl(api.tickets.get.path, { id: glpiId });
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch ticket");
       return api.tickets.get.responses[200].parse(await res.json());
     },
-    enabled: !!id,
-    refetchInterval: 3000, // Poll for updates (transfer requests, assignment changes)
+    enabled: !!glpiId,
+    refetchInterval: 3000, // Poll for updates
   });
 }
 
@@ -81,7 +156,7 @@ export function useCreateTicket() {
   });
 }
 
-// Update ticket (Status, AI Active, etc)
+// Update ticket (Status, AI Active, etc) - id agora é glpiId
 export function useUpdateTicket() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -90,7 +165,7 @@ export function useUpdateTicket() {
     mutationFn: async ({ id, ...updates }: { id: number } & Partial<InsertTicket>) => {
       const url = buildUrl(api.tickets.update.path, { id });
       const res = await fetch(url, {
-        method: "PATCH", // Using PATCH as defined in routes
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
         credentials: "include",
@@ -99,11 +174,15 @@ export function useUpdateTicket() {
       if (!res.ok) {
          throw new Error("Failed to update ticket");
       }
-      return api.tickets.update.responses[200].parse(await res.json());
+      const updatedTicket = api.tickets.update.responses[200].parse(await res.json());
+      return updatedTicket;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      // Invalidate usando glpiId
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Ticket Updated",
         description: "Changes saved successfully.",
@@ -119,14 +198,14 @@ export function useUpdateTicket() {
   });
 }
 
-// Assign ticket to current admin
+// Assign ticket to current admin (glpiId)
 export function useAssignTicket() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (ticketId: number) => {
-      const res = await fetch(`/api/tickets/${ticketId}/assign`, {
+    mutationFn: async (glpiId: number) => {
+      const res = await fetch(`/api/tickets/${glpiId}/assign`, {
         method: "POST",
         credentials: "include",
       });
@@ -140,7 +219,9 @@ export function useAssignTicket() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Ticket Assigned",
         description: "You are now handling this ticket.",
@@ -156,14 +237,14 @@ export function useAssignTicket() {
   });
 }
 
-// Request transfer of ticket
+// Request transfer of ticket (glpiId) - Desabilitado, usar GLPI diretamente
 export function useRequestTransfer() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (ticketId: number) => {
-      const res = await fetch(`/api/tickets/${ticketId}/request-transfer`, {
+    mutationFn: async (glpiId: number) => {
+      const res = await fetch(`/api/tickets/${glpiId}/request-transfer`, {
         method: "POST",
         credentials: "include",
       });
@@ -177,7 +258,9 @@ export function useRequestTransfer() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Transfer Requested",
         description: "Transfer request has been sent to the current admin.",
@@ -193,14 +276,14 @@ export function useRequestTransfer() {
   });
 }
 
-// Accept transfer of ticket
+// Accept transfer of ticket (glpiId) - Desabilitado, usar GLPI diretamente
 export function useAcceptTransfer() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (ticketId: number) => {
-      const res = await fetch(`/api/tickets/${ticketId}/accept-transfer`, {
+    mutationFn: async (glpiId: number) => {
+      const res = await fetch(`/api/tickets/${glpiId}/accept-transfer`, {
         method: "POST",
         credentials: "include",
       });
@@ -214,7 +297,9 @@ export function useAcceptTransfer() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Transfer Accepted",
         description: "Ticket has been transferred successfully.",
@@ -230,14 +315,14 @@ export function useAcceptTransfer() {
   });
 }
 
-// Unassign ticket
+// Unassign ticket (glpiId) - Desabilitado, usar GLPI diretamente
 export function useUnassignTicket() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (ticketId: number) => {
-      const res = await fetch(`/api/tickets/${ticketId}/unassign`, {
+    mutationFn: async (glpiId: number) => {
+      const res = await fetch(`/api/tickets/${glpiId}/unassign`, {
         method: "POST",
         credentials: "include",
       });
@@ -251,7 +336,9 @@ export function useUnassignTicket() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Ticket Unassigned",
         description: "You are no longer handling this ticket.",
@@ -267,14 +354,14 @@ export function useUnassignTicket() {
   });
 }
 
-// Reject transfer request
+// Reject transfer request (glpiId) - Desabilitado, usar GLPI diretamente
 export function useRejectTransfer() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (ticketId: number) => {
-      const res = await fetch(`/api/tickets/${ticketId}/reject-transfer`, {
+    mutationFn: async (glpiId: number) => {
+      const res = await fetch(`/api/tickets/${glpiId}/reject-transfer`, {
         method: "POST",
         credentials: "include",
       });
@@ -288,7 +375,9 @@ export function useRejectTransfer() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: [api.tickets.list.path] });
-      queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.id] });
+      if (data.glpiId) {
+        queryClient.invalidateQueries({ queryKey: [api.tickets.get.path, data.glpiId] });
+      }
       toast({
         title: "Transfer Rejected",
         description: "Transfer request has been rejected.",

@@ -12,16 +12,35 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Users, Ticket, AlertCircle, CheckCircle } from "lucide-react";
 
 export default function Dashboard() {
-  const { data: tickets, isLoading } = useTickets();
+  const { data, isLoading, error } = useTickets();
 
   if (isLoading) {
     return <DashboardSkeleton />;
   }
 
-  const ticketList = tickets || [];
+  if (error) {
+    return (
+      <div className="space-y-8 animate-enter">
+        <div>
+          <h1 className="text-3xl font-bold font-display text-foreground">Dashboard</h1>
+          <p className="text-muted-foreground mt-1">Overview of support performance and ticket metrics.</p>
+        </div>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Erro ao carregar dados</AlertTitle>
+          <AlertDescription>
+            {error instanceof Error ? error.message : "Não foi possível carregar os dados do dashboard. Por favor, tente novamente mais tarde."}
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  const ticketList = data?.tickets || [];
 
   // Calculate stats
   const total = ticketList.length;

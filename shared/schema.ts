@@ -13,19 +13,27 @@ import { conversations } from "./models/chat";
 import { users } from "./models/auth";
 
 // === TICKETS ===
+// Tabela agora serve principalmente como mapeamento entre GLPI e funcionalidades locais
+// Todos os tickets são gerenciados no GLPI, esta tabela apenas mapeia:
+// - glpiId -> conversationId (para chat local)
+// - glpiId -> userId (para filtro "meus tickets")
 export const tickets = pgTable("tickets", {
   id: serial("id").primaryKey(),
-  title: text("title").notNull(),
-  description: text("description"), // Initial query
-  status: text("status").notNull().default("open"), // open, resolved, escalated
-  priority: text("priority").notNull().default("medium"), // low, medium, high
-  sentiment: text("sentiment").default("neutral"), // positive, neutral, negative
-  customerName: text("customer_name"),
-  userId: text("user_id").references(() => users.id), // User who created the ticket
-  conversationId: integer("conversation_id").references(() => conversations.id),
-  assignedTo: text("assigned_to").references(() => users.id), // Admin currently handling the ticket
-  transferRequestTo: text("transfer_request_to").references(() => users.id), // Admin requesting transfer
+  glpiId: integer("glpi_id").notNull().unique(), // ID do ticket no GLPI (obrigatório, único)
+  conversationId: integer("conversation_id").references(() => conversations.id), // Para chat local vinculado ao ticket GLPI
+  userId: text("user_id").references(() => users.id), // User que criou o ticket (para filtro "meus tickets")
   createdAt: timestamp("created_at").defaultNow(),
+  
+  // Campos mantidos temporariamente para compatibilidade (podem ser removidos depois)
+  // Esses dados agora vêm exclusivamente do GLPI via API
+  title: text("title"), // Não mais obrigatório, vem do GLPI
+  description: text("description"),
+  status: text("status"),
+  priority: text("priority"),
+  sentiment: text("sentiment"),
+  customerName: text("customer_name"),
+  assignedTo: text("assigned_to").references(() => users.id),
+  transferRequestTo: text("transfer_request_to").references(() => users.id),
 });
 
 // === KNOWLEDGE BASE ===

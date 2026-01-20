@@ -32,13 +32,13 @@ export function useSendTicketMessage() {
 
       return res.json();
     },
-    onSuccess: (_, { ticketId, conversationId }) => {
-      // Invalidate ticket query
-      queryClient.invalidateQueries({ queryKey: ["/api/tickets", ticketId] });
+    onSuccess: (_, { conversationId }) => {
       // Invalidate conversation query to immediately show the new message
       if (conversationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/conversations", conversationId] });
       }
+      // Invalidate tickets list
+      queryClient.invalidateQueries({ queryKey: ["/api/tickets"] });
     },
     onError: (error: Error) => {
       toast({
